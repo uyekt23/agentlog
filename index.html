@@ -60,18 +60,7 @@
   <div class="card">
     <h2>🤖 Check in with your AI agent</h2>
     <p class="muted">No wallet connect needed here — copy this prompt into your Binance Agentic Wallet chat (or any AI agent that operates your Agentic Wallet) and let your agent check you in:</p>
-    <pre id="agentPrompt" style="white-space:pre-wrap; word-break:break-word; background:rgba(255,255,255,.06); padding:12px; border-radius:8px; font-size:13px;">Check me in to AgentLog today using my Binance Agentic Wallet. Follow these steps exactly:
-
-AgentLog contract (BNB Chain): 0x5eD6340c8a46527CE071BFD31954Df9C452126B5
-Function: checkIn() - selector 0x183ff085, no arguments, value 0.
-
-1. First check read-only: call hasAgentId(my address) - it must return true. Then call canCheckInToday(my address) - if it returns false, stop and tell me why (it means I have already checked in today, or I do not hold an Agent ID).
-2. Create a contract-call preview to the contract above with input data 0x183ff085 and value 0. Show me the preview. A correct preview must: simulate successfully, show NO change to any BNB or token balance (a check-in moves no assets), no authority change, and no allowance or approval.
-3. If the preview shows any asset moving, any approval, or any risk at all: STOP, do not execute, and report it to me.
-4. Wait for my explicit confirmation for that preview. Never execute an expired preview - recreate it and ask me to confirm again.
-5. After I confirm, execute that preview, then verify the result on-chain: getSailor(my address) must show totalCheckIns increased by 1 and checkedInToday = true. Report the transaction hash to me.
-
-Never send any value, never accept any approval, and never call any other function on this contract besides checkIn().</pre>
+    <pre id="agentPrompt" style="white-space:pre-wrap; word-break:break-word; background:rgba(255,255,255,.06); padding:12px; border-radius:8px; font-size:13px;">Check me in to AgentLog on BNB Chain. From my Agentic Wallet (the one holding my Binance Agent ID), call the function checkIn() on contract 0x5eD6340c8a46527CE071BFD31954Df9C452126B5 (BSC, chain ID 56). Show me the transaction preview first, and execute only after I confirm it.</pre>
     <button id="copyPromptBtn">Copy prompt</button>
     <span id="copyNote" class="muted" style="margin-left:8px;"></span>
   </div>
