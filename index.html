@@ -58,6 +58,14 @@
   </div>
 
   <div class="card">
+    <h2>🤖 Check in with your AI agent</h2>
+    <p class="muted">No wallet connect needed here — copy this prompt into your Binance Agentic Wallet chat (or any AI agent that operates your Agentic Wallet) and let your agent check you in:</p>
+    <pre id="agentPrompt" style="white-space:pre-wrap; word-break:break-word; background:rgba(255,255,255,.06); padding:12px; border-radius:8px; font-size:13px;">Check me in to AgentLog on BNB Chain. From my Agentic Wallet (the one holding my Binance Agent ID), call the function checkIn() on contract 0x5eD6340c8a46527CE071BFD31954Df9C452126B5 (BSC, chain ID 56). Show me the transaction preview first, and execute only after I confirm it.</pre>
+    <button id="copyPromptBtn">Copy prompt</button>
+    <span id="copyNote" class="muted" style="margin-left:8px;"></span>
+  </div>
+
+  <div class="card">
     <h2>🏆 Top streaks</h2>
     <ul class="board" id="board"><li><span class="muted">Loading…</span></li></ul>
   </div>
@@ -207,6 +215,15 @@
       $("status").textContent = "Viewing " + short(addr) + " (read-only). To check in, connect this wallet with the Connect button above.";
     } catch (e) {
       $("status").textContent = "Lookup failed: " + (e.shortMessage || e.message);
+    }
+  };
+
+  $("copyPromptBtn").onclick = async () => {
+    try {
+      await navigator.clipboard.writeText($("agentPrompt").textContent.trim());
+      $("copyNote").textContent = "Copied — paste it into your agent chat.";
+    } catch (e) {
+      $("copyNote").textContent = "Copy failed — long-press the text above to copy it manually.";
     }
   };
 
