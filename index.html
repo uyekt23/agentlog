@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentLog — Daily Logbook for Agent ID Holders</title>
+<style>
+  :root { color-scheme: light dark; --gold: #f0b90b; --navy: #0b1c2c; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 0 16px 32px; display: flex; justify-content: center; }
+  main { max-width: 560px; width: 100%; }
+  header { background: var(--navy); color: #fff; border-radius: 0 0 16px 16px; padding: 28px 20px 20px; margin: 0 -16px 20px; text-align: center; }
+  header h1 { font-size: 32px; margin: 0 0 6px; }
+  header h1 .gold { color: var(--gold); }
+  header p { opacity: .85; margin: 0; font-size: 15px; line-height: 1.45; }
+  .stats { display: flex; gap: 10px; margin-bottom: 16px; }
+  .stat { flex: 1; border: 1px solid rgba(128,128,128,.35); border-radius: 12px; padding: 12px 8px; text-align: center; }
+  .stat strong { display: block; font-size: 22px; color: var(--gold); }
+  .stat span { font-size: 12px; opacity: .75; }
+  .card { border: 1px solid rgba(128,128,128,.35); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 16px; margin: 0 0 10px; }
+  button { font-size: 16px; padding: 10px 18px; border-radius: 10px; border: 0; cursor: pointer; background: var(--gold); color: #111; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  .row { display: flex; justify-content: space-between; padding: 4px 0; }
+  .muted { opacity: .7; font-size: 14px; line-height: 1.5; }
+  #status { min-height: 20px; }
+  ul.feed, ul.board { list-style: none; margin: 0; padding: 0; font-size: 14px; }
+  ul.feed li, ul.board li { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px dashed rgba(128,128,128,.25); }
+  ul.feed li:last-child, ul.board li:last-child { border-bottom: 0; }
+  .addr { font-family: ui-monospace, monospace; }
+  ul.trust { margin: 0; padding-left: 18px; font-size: 14px; line-height: 1.6; opacity: .85; }
+  a { color: var(--gold); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>⚓ Agent<span class="gold">Log</span></h1>
+    <p>The daily on-chain logbook for Binance Agent ID holders.<br>One check-in per day — keep your streak alive.</p>
+  </header>
+
+  <div class="stats">
+    <div class="stat"><strong id="gSailors">–</strong><span>sailors aboard</span></div>
+    <div class="stat"><strong id="gTotal">–</strong><span>total check-ins</span></div>
+    <div class="stat"><strong id="gToday">–</strong><span>today (UTC)</span></div>
+  </div>
+
+  <div class="card">
+    <p id="status" class="muted">Connect a wallet that holds a Binance Agent ID to check in.</p>
+    <button id="connectBtn">Connect wallet</button>
+    <button id="checkInBtn" disabled>Check in today</button>
+    <div id="mine" style="margin-top:12px; display:none">
+      <div class="row"><span>My check-ins</span><strong id="mTotal">–</strong></div>
+      <div class="row"><span>My current streak</span><strong id="mStreak">–</strong></div>
+      <div class="row"><span>My longest streak</span><strong id="mLongest">–</strong></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🏆 Top streaks</h2>
+    <ul class="board" id="board"><li><span class="muted">Loading…</span></li></ul>
+  </div>
+
+  <div class="card">
+    <h2>🧭 Latest check-ins</h2>
+    <ul class="feed" id="feed"><li><span class="muted">Loading…</span></li></ul>
+  </div>
+
+  <div class="card">
+    <h2>Why you can trust it</h2>
+    <ul class="trust">
+      <li><strong>No funds, ever.</strong> The contract cannot receive, hold, or move money or tokens.</li>
+      <li><strong>No fees, no approvals.</strong> A check-in is one plain contract call — it never asks you to approve a token.</li>
+      <li><strong>No admin.</strong> Nobody can pause it, change it, or upgrade it. The code you see is the code that runs, forever.</li>
+      <li><strong>Open &amp; verified.</strong> Full source is public — read it yourself on <a id="contractLink" href="#" target="_blank" rel="noopener">BscScan</a>.</li>
+    </ul>
+  </div>
+
+  <p class="muted">Built for the Binance Agent ID Hackathon. Not affiliated with Binance.</p>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<script>
+  // Fill in after deployment:
+  const CONTRACT_ADDRESS = "0x5eD6340c8a46527CE071BFD31954Df9C452126B5";
+  const AGENT_ID_REGISTRY = "0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F";
+  const READ_RPC = "https://bsc-dataseed.binance.org";
+  const ABI = [
+    "function checkIn()",
+    "function totalCheckIns() view returns (uint256)",
+    "function totalSailors() view returns (uint256)",
+    "function checkInsOnDay(uint256) view returns (uint256)",
+    "function today() view returns (uint256)",
+    "function hasAgentId(address) view returns (bool)",
+    "function canCheckInToday(address) view returns (bool)",
+    "function getSailor(address) view returns (uint256,uint256,uint256,uint256,bool)",
+    "event CheckedIn(address indexed sailor, uint256 indexed day, uint256 streak, uint256 totalCheckIns)"
+  ];
+  const ERC721_ABI = ["function balanceOf(address) view returns (uint256)"];
+
+  const $ = (id) => document.getElementById(id);
+  const short = (a) => a.slice(0, 6) + "…" + a.slice(-4);
+  $("contractLink").href = "https://bscscan.com/address/" + CONTRACT_ADDRESS + "#code";
+
+  let provider, signer, account;
+
+  async function loadGlobals(readProvider) {
+    const c = new ethers.Contract(CONTRACT_ADDRESS, ABI, readProvider);
+    const [sailors, total, day] = await Promise.all([c.totalSailors(), c.totalCheckIns(), c.today()]);
+    const todayCount = await c.checkInsOnDay(day);
+    $("gSailors").textContent = sailors.toString();
+    $("gTotal").textContent = total.toString();
+    $("gToday").textContent = todayCount.toString();
+    return c;
+  }
+
+  async function loadSocial(readProvider) {
+    const c = new ethers.Contract(CONTRACT_ADDRESS, ABI, readProvider);
+    let logs = [];
+    try { logs = await c.queryFilter(c.filters.CheckedIn(), 0, "latest"); } catch (e) { /* RPC log limits */ }
+    // Latest check-ins feed
+    const feed = $("feed");
+    if (!logs.length) {
+      feed.innerHTML = '<li><span class="muted">No check-ins yet — be the first sailor in the log.</span></li>';
+    } else {
+      feed.innerHTML = logs.slice(-8).reverse().map((l) =>
+        `<li><span class="addr">${short(l.args.sailor)}</span><span>streak ${l.args.streak.toString()} · total ${l.args.totalCheckIns.toString()}</span></li>`
+      ).join("");
+    }
+    // Top streaks board: one getSailor call per unique sailor (cap 60)
+    const unique = [...new Set(logs.map((l) => l.args.sailor))].slice(0, 60);
+    const board = $("board");
+    if (!unique.length) {
+      board.innerHTML = '<li><span class="muted">No sailors yet.</span></li>';
+      return;
+    }
+    const rows = await Promise.all(unique.map(async (a) => {
+      const [total, streak, longest] = await c.getSailor(a);
+      return { a, total: Number(total), streak: Number(streak), longest: Number(longest) };
+    }));
+    rows.sort((x, y) => (y.streak - x.streak) || (y.longest - x.longest) || (y.total - x.total));
+    board.innerHTML = rows.slice(0, 5).map((r, i) =>
+      `<li><span>${["🥇","🥈","🥉","4.","5."][i]} <span class="addr">${short(r.a)}</span></span><span>🔥 ${r.streak} day streak · ${r.total} check-ins</span></li>`
+    ).join("");
+  }
+
+  async function refreshMine() {
+    const c = new ethers.Contract(CONTRACT_ADDRESS, ABI, provider);
+    const [total, streak, longest, , doneToday] = await c.getSailor(account);
+    $("mine").style.display = "block";
+    $("mTotal").textContent = total.toString();
+    $("mStreak").textContent = streak.toString() + " day(s)";
+    $("mLongest").textContent = longest.toString() + " day(s)";
+    const can = await c.canCheckInToday(account);
+    $("checkInBtn").disabled = !can;
+    $("status").textContent = doneToday
+      ? "You are checked in for today. Come back tomorrow to keep the streak going."
+      : "You hold an Agent ID and have not checked in today yet.";
+  }
+
+  $("connectBtn").onclick = async () => {
+    if (!window.ethereum) { $("status").textContent = "No wallet found. Open this page in a wallet browser (e.g. MetaMask) on BNB Chain."; return; }
+    try {
+      provider = new ethers.BrowserProvider(window.ethereum);
+      await provider.send("eth_requestAccounts", []);
+      const net = await provider.getNetwork();
+      if (net.chainId !== 56n) {
+        await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x38" }] });
+        provider = new ethers.BrowserProvider(window.ethereum);
+      }
+      signer = await provider.getSigner();
+      account = await signer.getAddress();
+      const registry = new ethers.Contract(AGENT_ID_REGISTRY, ERC721_ABI, provider);
+      const bal = await registry.balanceOf(account);
+      $("connectBtn").style.display = "none";
+      if (bal === 0n) {
+        $("status").textContent = "This wallet does not hold a Binance Agent ID. Claim one in the Binance App (Wallet → Agent ID), then come back.";
+        return;
+      }
+      await refreshMine();
+      await loadGlobals(provider);
+      await loadSocial(provider);
+    } catch (e) {
+      $("status").textContent = "Connection failed: " + (e.shortMessage || e.message);
+    }
+  };
+
+  $("checkInBtn").onclick = async () => {
+    try {
+      $("checkInBtn").disabled = true;
+      $("status").textContent = "Sending your check-in — confirm it in your wallet…";
+      const c = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+      const tx = await c.checkIn();
+      $("status").textContent = "Check-in sent, waiting for confirmation…";
+      await tx.wait();
+      $("status").textContent = "Checked in. See you tomorrow, sailor ⚓";
+      await refreshMine();
+      await loadGlobals(provider);
+      await loadSocial(provider);
+    } catch (e) {
+      $("status").textContent = "Check-in failed: " + (e.shortMessage || e.message);
+      $("checkInBtn").disabled = false;
+    }
+  };
+
+  // Public read-only stats without a wallet:
+  const readProvider = new ethers.JsonRpcProvider(READ_RPC);
+  loadGlobals(readProvider).catch(() => {});
+  loadSocial(readProvider).catch(() => {
+    $("feed").innerHTML = '<li><span class="muted">Could not load the log right now.</span></li>';
+    $("board").innerHTML = '<li><span class="muted">Could not load the board right now.</span></li>';
+  });
+</script>
+</body>
+</html>
