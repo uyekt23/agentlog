@@ -48,6 +48,7 @@
   <div class="card">
     <p id="status" class="muted">Connect with your Binance Agentic Wallet — the address that holds your Agent ID (name.ai). A regular wallet address will not work.</p>
     <button id="connectBtn">Connect wallet</button>
+    <button id="viewBtn">View by address</button>
     <button id="checkInBtn" disabled>Check in today</button>
     <div id="mine" style="margin-top:12px; display:none">
       <div class="row"><span>My check-ins</span><strong id="mTotal">–</strong></div>
@@ -182,6 +183,30 @@
       await loadSocial(provider);
     } catch (e) {
       $("status").textContent = "Connection failed: " + (e.shortMessage || e.message);
+    }
+  };
+
+  $("viewBtn").onclick = async () => {
+    const input = prompt("Paste your Agentic Wallet address — the one holding your Agent ID (name.ai):");
+    if (!input) return;
+    const addr = input.trim();
+    if (!ethers.isAddress(addr)) { $("status").textContent = "That does not look like a valid wallet address."; return; }
+    try {
+      const readProvider = new ethers.JsonRpcProvider(READ_RPC);
+      const c = new ethers.Contract(CONTRACT_ADDRESS, ABI, readProvider);
+      const holds = await c.hasAgentId(addr);
+      if (!holds) {
+        $("status").textContent = "This address does not hold a Binance Agent ID. Check that you pasted your Agentic Wallet address, not a regular wallet address.";
+        return;
+      }
+      const [total, streak, longest] = await c.getSailor(addr);
+      $("mine").style.display = "block";
+      $("mTotal").textContent = total.toString();
+      $("mStreak").textContent = streak.toString() + " day(s)";
+      $("mLongest").textContent = longest.toString() + " day(s)";
+      $("status").textContent = "Viewing " + short(addr) + " (read-only). To check in, connect this wallet with the Connect button above.";
+    } catch (e) {
+      $("status").textContent = "Lookup failed: " + (e.shortMessage || e.message);
     }
   };
 
