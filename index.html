@@ -46,7 +46,7 @@
   </div>
 
   <div class="card">
-    <p id="status" class="muted">Connect a wallet that holds a Binance Agent ID to check in.</p>
+    <p id="status" class="muted">Connect with your Binance Agentic Wallet — the address that holds your Agent ID (name.ai). A regular wallet address will not work.</p>
     <button id="connectBtn">Connect wallet</button>
     <button id="checkInBtn" disabled>Check in today</button>
     <div id="mine" style="margin-top:12px; display:none">
@@ -174,7 +174,7 @@
       const bal = await registry.balanceOf(account);
       $("connectBtn").style.display = "none";
       if (bal === 0n) {
-        $("status").textContent = "This wallet does not hold a Binance Agent ID. Claim one in the Binance App (Wallet → Agent ID), then come back.";
+        $("status").textContent = "This address does not hold a Binance Agent ID. If you already have one, you are connected with the wrong address — switch to your Agentic Wallet address. Otherwise claim an Agent ID in the Binance App (Wallet → Agent ID), then come back.";
         return;
       }
       await refreshMine();
