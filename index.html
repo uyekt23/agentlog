@@ -93,7 +93,31 @@
   // Fill in after deployment:
   const CONTRACT_ADDRESS = "0x5eD6340c8a46527CE071BFD31954Df9C452126B5";
   const AGENT_ID_REGISTRY = "0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F";
-  const READ_RPC = "https://bsc-dataseed.binance.org";
+  const RPCS = [
+    "https://bsc-dataseed.binance.org",
+    "https://bsc-dataseed1.binance.org",
+    "https://bsc-rpc.publicnode.com",
+    "https://binance.llamarpc.com",
+    "https://bsc-dataseed1.defibit.io"
+  ];
+  // Try each public RPC in turn until one answers; cache the winner.
+  // The old code used one RPC with no fallback, so a single dead/slow
+  // endpoint left the counters on "–" and the boards empty forever.
+  let cachedProvider = null;
+  async function getProvider() {
+    if (cachedProvider) return cachedProvider;
+    for (const url of RPCS) {
+      try {
+        const p = new ethers.JsonRpcProvider(url);
+        const chain = await Promise.race([
+          p.getNetwork(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("rpc timeout")), 8000))
+        ]);
+        if (chain.chainId === 56n) { cachedProvider = p; return p; }
+      } catch (e) { /* try the next RPC */ }
+    }
+    throw new Error("all RPCs unreachable");
+  }
   const ABI = [
     "function checkIn()",
     "function totalCheckIns() view returns (uint256)",
@@ -123,10 +147,31 @@
     return c;
   }
 
+  // Fetch CheckedIn logs backwards in 100k-block windows (~3.5 days each).
+  // The old code queried from block 0 to latest in one call — BSC public
+  // nodes reject/time out on a ~60M-block range, so the feed always came
+  // back empty. The contract is only days old, so 5 windows is plenty.
+  async function fetchLogs(c, readProvider) {
+    const latest = await readProvider.getBlockNumber();
+    const all = [];
+    const WINDOW = 100000, MAX_WINDOWS = 5;
+    for (let i = 0; i < MAX_WINDOWS; i++) {
+      const to = latest - i * WINDOW;
+      const from = Math.max(0, to - WINDOW + 1);
+      const chunk = await c.queryFilter(c.filters.CheckedIn(), from, to);
+      all.push(...chunk);
+      if (all.length >= 100) break;
+    }
+    all.sort((a, b) => (a.blockNumber - b.blockNumber) || (a.index - b.index));
+    return all;
+  }
+
+  // Returns true on a successful load, false if the chain could not be read.
+  // A failed load must NOT print "No sailors yet" — that lie is exactly
+  // what the page showed while the chain held 13 sailors / 22 check-ins.
   async function loadSocial(readProvider) {
     const c = new ethers.Contract(CONTRACT_ADDRESS, ABI, readProvider);
-    let logs = [];
-    try { logs = await c.queryFilter(c.filters.CheckedIn(), 0, "latest"); } catch (e) { /* RPC log limits */ }
+    const logs = await fetchLogs(c, readProvider);
     // Latest check-ins feed
     const feed = $("feed");
     if (!logs.length) {
@@ -141,7 +186,7 @@
     const board = $("board");
     if (!unique.length) {
       board.innerHTML = '<li><span class="muted">No sailors yet.</span></li>';
-      return;
+      return true;
     }
     const rows = await Promise.all(unique.map(async (a) => {
       const [total, streak, longest] = await c.getSailor(a);
@@ -151,6 +196,15 @@
     board.innerHTML = rows.slice(0, 5).map((r, i) =>
       `<li><span>${["🥇","🥈","🥉","4.","5."][i]} <span class="addr">${short(r.a)}</span></span><span>🔥 ${r.streak} day streak · ${r.total} check-ins</span></li>`
     ).join("");
+    return true;
+  }
+
+  function showLoadError() {
+    $("gSailors").textContent = "?";
+    $("gTotal").textContent = "?";
+    $("gToday").textContent = "?";
+    $("feed").innerHTML = '<li><span class="muted">Could not load the log right now — the chain still holds the real numbers. Try reloading.</span></li>';
+    $("board").innerHTML = '<li><span class="muted">Could not load the board right now.</span></li>';
   }
 
   async function refreshMine() {
@@ -200,7 +254,7 @@
     const addr = input.trim();
     if (!ethers.isAddress(addr)) { $("status").textContent = "That does not look like a valid wallet address."; return; }
     try {
-      const readProvider = new ethers.JsonRpcProvider(READ_RPC);
+      const readProvider = await getProvider();
       const c = new ethers.Contract(CONTRACT_ADDRESS, ABI, readProvider);
       const holds = await c.hasAgentId(addr);
       if (!holds) {
@@ -246,12 +300,17 @@
   };
 
   // Public read-only stats without a wallet:
-  const readProvider = new ethers.JsonRpcProvider(READ_RPC);
-  loadGlobals(readProvider).catch(() => {});
-  loadSocial(readProvider).catch(() => {
-    $("feed").innerHTML = '<li><span class="muted">Could not load the log right now.</span></li>';
-    $("board").innerHTML = '<li><span class="muted">Could not load the board right now.</span></li>';
-  });
+  // One shared provider with fallbacks; a failed load shows an honest
+  // error instead of a false empty board.
+  (async () => {
+    try {
+      const readProvider = await getProvider();
+      await loadGlobals(readProvider);
+      await loadSocial(readProvider);
+    } catch (e) {
+      showLoadError();
+    }
+  })();
 </script>
 </body>
 </html>
