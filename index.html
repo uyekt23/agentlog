@@ -144,34 +144,70 @@
     $("gSailors").textContent = sailors.toString();
     $("gTotal").textContent = total.toString();
     $("gToday").textContent = todayCount.toString();
-    return c;
+    return Number(total);
   }
 
-  // Fetch CheckedIn logs backwards in 100k-block windows (~3.5 days each).
-  // The old code queried from block 0 to latest in one call — BSC public
-  // nodes reject/time out on a ~60M-block range, so the feed always came
-  // back empty. The contract is only days old, so 5 windows is plenty.
-  async function fetchLogs(c, readProvider) {
-    const latest = await readProvider.getBlockNumber();
+  // eth_getLogs is the hard part: the Binance dataseed nodes now answer
+  // "limit exceeded" at ANY range, and publicnode caps the range at
+  // 50,000 blocks. So the board needs its own provider: probe each
+  // candidate with a tiny getLogs call and keep the first that answers.
+  const TOPIC0 = ethers.id("CheckedIn(address,uint256,uint256,uint256)");
+  const LOG_RPCS = [
+    "https://bsc-rpc.publicnode.com",
+    "https://bsc.drpc.org",
+    ...RPCS
+  ];
+  let cachedLogsProvider = null;
+  async function getLogsProvider() {
+    if (cachedLogsProvider) return cachedLogsProvider;
+    for (const url of LOG_RPCS) {
+      try {
+        const p = new ethers.JsonRpcProvider(url);
+        const head = await Promise.race([
+          p.getBlockNumber(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("rpc timeout")), 8000))
+        ]);
+        await p.getLogs({ address: CONTRACT_ADDRESS, topics: [TOPIC0], fromBlock: head - 10, toBlock: head });
+        cachedLogsProvider = p; return p;
+      } catch (e) { /* try the next RPC */ }
+    }
+    throw new Error("no logs-capable RPC");
+  }
+
+  // Scan backwards from the head in windows, shrinking the window when a
+  // node rejects the range, and stop as soon as every check-in the
+  // counters reported has been found.
+  async function fetchLogs(expectedTotal) {
+    const lp = await getLogsProvider();
+    const c = new ethers.Contract(CONTRACT_ADDRESS, ABI, lp);
+    const latest = await lp.getBlockNumber();
     const all = [];
-    const WINDOW = 100000, MAX_WINDOWS = 5;
-    for (let i = 0; i < MAX_WINDOWS; i++) {
-      const to = latest - i * WINDOW;
-      const from = Math.max(0, to - WINDOW + 1);
-      const chunk = await c.queryFilter(c.filters.CheckedIn(), from, to);
-      all.push(...chunk);
-      if (all.length >= 100) break;
+    let windowSize = 45000, scanned = 0, to = latest;
+    const MAX_SCAN = 450000;
+    while (to >= 0 && scanned < MAX_SCAN) {
+      const from = Math.max(0, to - windowSize + 1);
+      try {
+        const chunk = await c.queryFilter(c.filters.CheckedIn(), from, to);
+        all.push(...chunk);
+        scanned += to - from + 1;
+        if (expectedTotal && all.length >= expectedTotal) break;
+        if (from === 0) break;
+        to = from - 1;
+      } catch (e) {
+        if (windowSize > 5000) { windowSize = Math.floor(windowSize / 2); continue; }
+        throw e;
+      }
     }
     all.sort((a, b) => (a.blockNumber - b.blockNumber) || (a.index - b.index));
-    return all;
+    return { logs: all, contract: c };
   }
 
   // Returns true on a successful load, false if the chain could not be read.
   // A failed load must NOT print "No sailors yet" — that lie is exactly
   // what the page showed while the chain held 13 sailors / 22 check-ins.
-  async function loadSocial(readProvider) {
-    const c = new ethers.Contract(CONTRACT_ADDRESS, ABI, readProvider);
-    const logs = await fetchLogs(c, readProvider);
+  // The board loads independently: its failure never touches the counters.
+  async function loadSocial(expectedTotal) {
+    const { logs, contract: c } = await fetchLogs(expectedTotal);
     // Latest check-ins feed
     const feed = $("feed");
     if (!logs.length) {
@@ -199,10 +235,13 @@
     return true;
   }
 
-  function showLoadError() {
+  function showCounterError() {
     $("gSailors").textContent = "?";
     $("gTotal").textContent = "?";
     $("gToday").textContent = "?";
+  }
+
+  function showBoardError() {
     $("feed").innerHTML = '<li><span class="muted">Could not load the log right now — the chain still holds the real numbers. Try reloading.</span></li>';
     $("board").innerHTML = '<li><span class="muted">Could not load the board right now.</span></li>';
   }
@@ -242,7 +281,7 @@
       }
       await refreshMine();
       await loadGlobals(provider);
-      await loadSocial(provider);
+      try { await loadSocial(null); } catch (e) { showBoardError(); }
     } catch (e) {
       $("status").textContent = "Connection failed: " + (e.shortMessage || e.message);
     }
@@ -292,23 +331,28 @@
       $("status").textContent = "Checked in. See you tomorrow, sailor ⚓";
       await refreshMine();
       await loadGlobals(provider);
-      await loadSocial(provider);
+      try { await loadSocial(null); } catch (e) { showBoardError(); }
     } catch (e) {
       $("status").textContent = "Check-in failed: " + (e.shortMessage || e.message);
       $("checkInBtn").disabled = false;
     }
   };
 
-  // Public read-only stats without a wallet:
-  // One shared provider with fallbacks; a failed load shows an honest
-  // error instead of a false empty board.
+  // Public read-only stats without a wallet. Counters and board load in
+  // separate guards: a board failure must never wipe counters that
+  // already loaded (that flicker — numbers, then "?" — was this bug).
   (async () => {
+    let expectedTotal = null;
     try {
       const readProvider = await getProvider();
-      await loadGlobals(readProvider);
-      await loadSocial(readProvider);
+      expectedTotal = await loadGlobals(readProvider);
     } catch (e) {
-      showLoadError();
+      showCounterError();
+    }
+    try {
+      await loadSocial(expectedTotal);
+    } catch (e) {
+      showBoardError();
     }
   })();
 </script>
