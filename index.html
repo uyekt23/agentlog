@@ -157,49 +157,74 @@
     "https://bsc.drpc.org",
     ...RPCS
   ];
-  let cachedLogsProvider = null;
-  async function getLogsProvider() {
-    if (cachedLogsProvider) return cachedLogsProvider;
-    for (const url of LOG_RPCS) {
-      try {
-        const p = new ethers.JsonRpcProvider(url);
-        const head = await Promise.race([
-          p.getBlockNumber(),
-          new Promise((_, rej) => setTimeout(() => rej(new Error("rpc timeout")), 8000))
-        ]);
-        await p.getLogs({ address: CONTRACT_ADDRESS, topics: [TOPIC0], fromBlock: head - 10, toBlock: head });
-        cachedLogsProvider = p; return p;
-      } catch (e) { /* try the next RPC */ }
-    }
-    throw new Error("no logs-capable RPC");
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  function isRangeError(e) {
+    const m = String((e && (e.message || e.shortMessage)) || e || "");
+    return /exceed|limit|range|too large/i.test(m);
   }
 
-  // Scan backwards from the head in windows, shrinking the window when a
-  // node rejects the range, and stop as soon as every check-in the
-  // counters reported has been found.
+  // Probe one RPC for the largest getLogs window it accepts. Public
+  // nodes keep changing their caps (publicnode: 50k blocks one day,
+  // 10k the next), so the site must measure instead of assuming.
+  async function probeLogsWindow(url) {
+    try {
+      const p = new ethers.JsonRpcProvider(url);
+      const head = await Promise.race([
+        p.getBlockNumber(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("rpc timeout")), 8000))
+      ]);
+      for (const span of [100000, 45000, 10000, 5000]) {
+        try {
+          await p.getLogs({ address: CONTRACT_ADDRESS, topics: [TOPIC0], fromBlock: head - span, toBlock: head });
+          return { provider: p, window: Math.max(4000, Math.floor(span * 0.9)) };
+        } catch (e) { /* range too big or transient — try smaller */ }
+      }
+      await p.getLogs({ address: CONTRACT_ADDRESS, topics: [TOPIC0], fromBlock: head - 100, toBlock: head });
+      return { provider: p, window: 4500 };
+    } catch (e) { return null; }
+  }
+
+  // Scan backwards window by window. If a provider starts failing
+  // mid-scan (rate limit, dropped connection), rotate to the next one
+  // and continue from the same block, keeping the logs already found.
   async function fetchLogs(expectedTotal) {
-    const lp = await getLogsProvider();
-    const c = new ethers.Contract(CONTRACT_ADDRESS, ABI, lp);
-    const latest = await lp.getBlockNumber();
     const all = [];
-    let windowSize = 45000, scanned = 0, to = latest;
-    const MAX_SCAN = 450000;
-    while (to >= 0 && scanned < MAX_SCAN) {
-      const from = Math.max(0, to - windowSize + 1);
-      try {
-        const chunk = await c.queryFilter(c.filters.CheckedIn(), from, to);
-        all.push(...chunk);
-        scanned += to - from + 1;
+    let latest = null, to = null, scanned = 0, lastContract = null;
+    const MAX_SCAN = 1500000; // ~13 days of BSC blocks; contract is younger
+    for (const url of LOG_RPCS) {
+      if (expectedTotal && all.length >= expectedTotal) break;
+      if (to !== null && to < 0) break;
+      const probed = await probeLogsWindow(url);
+      if (!probed) continue;
+      const c = new ethers.Contract(CONTRACT_ADDRESS, ABI, probed.provider);
+      lastContract = c;
+      if (latest === null) {
+        try { latest = await probed.provider.getBlockNumber(); to = latest; }
+        catch (e) { continue; }
+      }
+      let windowSize = probed.window, fails = 0;
+      while (to >= 0 && scanned < MAX_SCAN) {
         if (expectedTotal && all.length >= expectedTotal) break;
-        if (from === 0) break;
-        to = from - 1;
-      } catch (e) {
-        if (windowSize > 5000) { windowSize = Math.floor(windowSize / 2); continue; }
-        throw e;
+        const from = Math.max(0, to - windowSize + 1);
+        try {
+          const chunk = await c.queryFilter(c.filters.CheckedIn(), from, to);
+          all.push(...chunk);
+          scanned += to - from + 1;
+          fails = 0;
+          if (from === 0) { to = -1; break; }
+          to = from - 1;
+        } catch (e) {
+          if (isRangeError(e) && windowSize > 5000) { windowSize = Math.floor(windowSize / 2); continue; }
+          fails++;
+          if (fails === 1) { await sleep(1500); continue; }
+          break; // rotate to the next provider, progress kept
+        }
       }
     }
     all.sort((a, b) => (a.blockNumber - b.blockNumber) || (a.index - b.index));
-    return { logs: all, contract: c };
+    const complete = (expectedTotal && all.length >= expectedTotal) || (to !== null && to < 0) || scanned >= MAX_SCAN;
+    if (!lastContract) throw new Error("no logs-capable RPC");
+    return { logs: all, contract: lastContract, complete };
   }
 
   // Returns true on a successful load, false if the chain could not be read.
@@ -207,7 +232,13 @@
   // what the page showed while the chain held 13 sailors / 22 check-ins.
   // The board loads independently: its failure never touches the counters.
   async function loadSocial(expectedTotal) {
-    const { logs, contract: c } = await fetchLogs(expectedTotal);
+    const { logs, contract: c, complete } = await fetchLogs(expectedTotal);
+    // An incomplete scan must never render as an empty board: if the
+    // counters say check-ins exist but the scan could not find them
+    // all, fail honestly so the caller shows the load-error message.
+    if (!complete && expectedTotal && logs.length < expectedTotal) {
+      throw new Error("incomplete log scan");
+    }
     // Latest check-ins feed
     const feed = $("feed");
     if (!logs.length) {
